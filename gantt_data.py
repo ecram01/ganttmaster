@@ -1,9 +1,7 @@
 # gantt_data.py
-# Data structures and business logic for the Gantt chart tool
-
 from datetime import date, timedelta
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
+from typing import List
 import pandas as pd
 
 from config import DEFAULT_DURATION_DAYS, DEFAULT_START_OFFSET_DAYS, DEFAULT_COLOUR
@@ -13,11 +11,11 @@ from config import DEFAULT_DURATION_DAYS, DEFAULT_START_OFFSET_DAYS, DEFAULT_COL
 class Task:
     task_id: str
     name: str
-    duration: int           # days (0 = milestone)
+    duration: int
     start_date: date
     end_date: date
     colour: str
-    dependency: str         # free-text, e.g. "T-001" or blank
+    dependency: str
 
     @property
     def is_milestone(self) -> bool:
@@ -25,12 +23,10 @@ class Task:
 
 
 def make_default_task(index: int) -> Task:
-    """Return a task populated with sensible defaults."""
     start = date.today() + timedelta(days=DEFAULT_START_OFFSET_DAYS)
     end   = start + timedelta(days=DEFAULT_DURATION_DAYS)
-    task_id = f"T-{index:03d}"
     return Task(
-        task_id    = task_id,
+        task_id    = f"T-{index:03d}",
         name       = f"Task {index}",
         duration   = DEFAULT_DURATION_DAYS,
         start_date = start,
@@ -40,20 +36,36 @@ def make_default_task(index: int) -> Task:
     )
 
 
-def create_project(task_count: int) -> list[Task]:
-    """Initialise a project with `task_count` default tasks."""
+def create_project(task_count: int) -> List[Task]:
     return [make_default_task(i + 1) for i in range(task_count)]
 
 
-def recalc_end(task: Task) -> date:
-    """Recompute end date from start + duration (milestone stays on start date)."""
-    if task.duration == 0:
-        return task.start_date
-    return task.start_date + timedelta(days=task.duration)
+def resolve_dependencies(tasks: List[Task]) -> List[Task]:
+    """
+    Cascade finish-to-start dependencies.
+    If task B depends on task A, B.start_date = A.end_date,
+    and B.end_date = B.start_date + B.duration.
+    Processes tasks in list order; handles simple chains.
+    """
+    id_to_task = {t.task_id: t for t in tasks}
+    # Iterate until stable (handles chains of any depth, up to len(tasks) passes)
+    for _ in range(len(tasks)):
+        changed = False
+        for task in tasks:
+            dep_id = task.dependency.strip() if task.dependency else ""
+            if dep_id and dep_id in id_to_task:
+                parent = id_to_task[dep_id]
+                new_start = parent.end_date
+                if new_start != task.start_date:
+                    task.start_date = new_start
+                    task.end_date   = new_start if task.duration == 0 else new_start + timedelta(days=task.duration)
+                    changed = True
+        if not changed:
+            break
+    return tasks
 
 
-def tasks_to_df(tasks: list[Task]) -> pd.DataFrame:
-    """Convert task list to a DataFrame for easy display / editing."""
+def tasks_to_df(tasks: List[Task]) -> pd.DataFrame:
     rows = []
     for t in tasks:
         rows.append({
@@ -68,15 +80,14 @@ def tasks_to_df(tasks: list[Task]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def df_to_tasks(df: pd.DataFrame) -> list[Task]:
-    """Reconstruct task list from an edited DataFrame."""
+def df_to_tasks(df: pd.DataFrame) -> List[Task]:
     tasks = []
     for _, row in df.iterrows():
         start = row["Start Date"]
-        if hasattr(start, "date"):      # pandas Timestamp → date
+        if hasattr(start, "date"):
             start = start.date()
         dur = int(row["Duration"])
-        end = start + timedelta(days=dur) if dur > 0 else start
+        end = start if dur == 0 else start + timedelta(days=dur)
         tasks.append(Task(
             task_id    = str(row["ID"]),
             name       = str(row["Task Name"]),
